@@ -1,2 +1,7 @@
-# gestion-desechos-radiactivos
-Aplicación para estimación de actividad y gestión de desechos radiactivos
+Aplicación Streamlit para:
+
+- registrar detectores
+- calcular actividad de desechos radiactivos
+- estimar tiempo de decaimiento
+- calcular fecha de dispensa
+- visualizar bultos liberables
