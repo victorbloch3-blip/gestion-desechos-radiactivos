@@ -11,9 +11,9 @@ st.set_page_config(page_title="Gestión de desechos versión 3", layout="wide")
 # --------------------------------------------------
 # CONFIGURACIÓN
 # --------------------------------------------------
-DISTANCIA_M = 0.30          # 30 cm fija
+DISTANCIA_M = 0.30
 FACTOR_CORRECCION = 2.0
-NIVEL_DISPENSA = 74.0       # Bq/g
+NIVEL_DISPENSA = 74.0
 
 HALF_LIFE_DAYS = {
     "I-131": 8.02,
@@ -23,9 +23,6 @@ HALF_LIFE_DAYS = {
     "F-18": 0.076,
 }
 
-# I-131, F-18, Tc-99m -> gamma
-# Ra-223 -> alpha
-# Lu-177 -> beta
 EFFICIENCY_TYPE = {
     "I-131": "gamma",
     "Tc-99m": "gamma",
@@ -36,7 +33,6 @@ EFFICIENCY_TYPE = {
 
 DB_PATH = Path("gestion_desechos_v3.db")
 
-
 # --------------------------------------------------
 # BASE DE DATOS
 # --------------------------------------------------
@@ -44,7 +40,6 @@ def get_conn():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
-
 
 def init_db():
     with get_conn() as conn:
@@ -74,40 +69,32 @@ def init_db():
                 fecha_medicion TEXT NOT NULL,
                 fecha_dispensa TEXT NOT NULL,
                 estado TEXT NOT NULL,
+                bulto_libre_liberacion TEXT NOT NULL,
                 creado_en TEXT NOT NULL,
                 FOREIGN KEY(detector_serie) REFERENCES detectores(serie)
             )
         """)
 
-
 init_db()
-
 
 # --------------------------------------------------
 # UTILIDADES
 # --------------------------------------------------
-def fmt_num(value: float, max_decimals: int = 2) -> str:
-    """Muestra números sin ceros innecesarios."""
+def fmt_num(value, decimals=6):
     if value is None:
         return ""
-    text = f"{value:,.{max_decimals}f}"
-    text = text.replace(",", "X").replace(".", ",").replace("X", ".")
-    text = text.rstrip("0").rstrip(",")
-    return text
-
+    try:
+        value = float(value)
+        text = f"{value:.{decimals}f}".rstrip("0").rstrip(".")
+        return text
+    except Exception:
+        return str(value)
 
 def query_df(sql: str, params=None) -> pd.DataFrame:
     with get_conn() as conn:
         return pd.read_sql_query(sql, conn, params=params or ())
 
-
-def upsert_detector(
-    serie: str,
-    eff_gamma: float,
-    eff_beta: float,
-    eff_alpha: float,
-    area_cm2: float,
-):
+def upsert_detector(serie, eff_gamma, eff_beta, eff_alpha, area_cm2):
     fecha_actualizacion = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with get_conn() as conn:
         conn.execute("""
@@ -123,46 +110,42 @@ def upsert_detector(
                 fecha_actualizacion = excluded.fecha_actualizacion
         """, (serie, eff_gamma, eff_beta, eff_alpha, area_cm2, fecha_actualizacion))
 
-
-def get_detector_by_serie(serie: str):
+def get_detector_by_serie(serie):
     df = query_df("SELECT * FROM detectores WHERE serie = ?", (serie,))
     if df.empty:
         return None
     return df.iloc[0].to_dict()
 
-
-def get_efficiency_for_isotope(radionuclido: str, detector: dict) -> tuple[float, str]:
+def get_efficiency_for_isotope(radionuclido, detector):
     eff_type = EFFICIENCY_TYPE[radionuclido]
     if eff_type == "gamma":
         return float(detector["eff_gamma"]), eff_type
-    if eff_type == "beta":
+    elif eff_type == "beta":
         return float(detector["eff_beta"]), eff_type
-    return float(detector["eff_alpha"]), eff_type
+    else:
+        return float(detector["eff_alpha"]), eff_type
 
-
-def calcular_actividad_bq_g(cps: float, eficiencia: float, area_cm2: float, masa_g: float) -> float:
-    # La fórmula usa área del detector en m².
+def calcular_actividad_bq_g(cps, eficiencia, area_cm2, masa_g):
     area_m2 = area_cm2 / 10000.0
     return (cps * 4 * math.pi * (DISTANCIA_M ** 2) * FACTOR_CORRECCION) / (area_m2 * eficiencia * masa_g)
 
-
-def calcular_tiempo_resguardo_dias(actividad_bq_g: float, radionuclido: str) -> float:
+def calcular_tiempo_resguardo_dias(actividad_bq_g, radionuclido):
     if actividad_bq_g <= NIVEL_DISPENSA:
         return 0.0
     t12 = HALF_LIFE_DAYS[radionuclido]
     return (t12 / math.log(2)) * math.log(actividad_bq_g / NIVEL_DISPENSA)
 
-
-def guardar_registro(resultado: dict):
+def guardar_registro(resultado):
     with get_conn() as conn:
         conn.execute("""
             INSERT INTO registros (
                 bulto, radionuclido, detector_serie, masa_g, cps,
                 eficiencia_tipo, eficiencia_valor, area_cm2,
                 actividad_bq_g, tiempo_resguardo_d,
-                fecha_medicion, fecha_dispensa, estado, creado_en
+                fecha_medicion, fecha_dispensa, estado,
+                bulto_libre_liberacion, creado_en
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             resultado["bulto"],
             resultado["radionuclido"],
@@ -177,16 +160,15 @@ def guardar_registro(resultado: dict):
             resultado["fecha_medicion"],
             resultado["fecha_dispensa"],
             resultado["estado"],
+            resultado["bulto_libre_liberacion"],
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         ))
-
 
 # --------------------------------------------------
 # SESSION STATE
 # --------------------------------------------------
 if "resultado_actual" not in st.session_state:
     st.session_state.resultado_actual = None
-
 
 # --------------------------------------------------
 # INTERFAZ
@@ -195,7 +177,7 @@ st.title("Gestión de desechos versión 3")
 
 menu = st.sidebar.radio(
     "Menú",
-    ["Nuevo registro", "Detectores", "Historial"],
+    ["Nuevo registro", "Detectores", "Historial"]
 )
 
 # --------------------------------------------------
@@ -214,8 +196,8 @@ if menu == "Nuevo registro":
         with col1:
             bulto = st.text_input("Número de bulto")
             radionuclido = st.selectbox("Radionúclido", list(HALF_LIFE_DAYS.keys()))
-            masa_g = st.number_input("Masa del bulto (g)", min_value=0.0, step=1.0)
-            cps = st.number_input("CPS", min_value=0.0, step=1.0)
+            masa_g = st.number_input("Masa del bulto (g)", min_value=0.0, step=1.0, format="%.6f")
+            cps = st.number_input("CPS", min_value=0.0, step=1.0, format="%.6f")
 
         with col2:
             fecha_medicion = st.date_input("Fecha de medición")
@@ -258,7 +240,8 @@ if menu == "Nuevo registro":
                     dias_para_dispensa = math.ceil(tiempo_resguardo_d)
                     fecha_dispensa = fecha_medicion + timedelta(days=dias_para_dispensa)
 
-                    estado = "Liberable" if actividad_bq_g <= NIVEL_DISPENSA else "En resguardo"
+                    libre = "Sí" if actividad_bq_g <= NIVEL_DISPENSA else "No"
+                    estado = "Liberable" if libre == "Sí" else "En resguardo"
 
                     st.session_state.resultado_actual = {
                         "bulto": bulto.strip(),
@@ -274,18 +257,20 @@ if menu == "Nuevo registro":
                         "fecha_medicion": str(fecha_medicion),
                         "fecha_dispensa": str(fecha_dispensa),
                         "estado": estado,
+                        "bulto_libre_liberacion": libre,
                     }
 
         resultado = st.session_state.resultado_actual
+
         if resultado is not None:
-            st.markdown("### Resultado")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Actividad estimada (Bq/g)", fmt_num(resultado["actividad_bq_g"]))
-            c2.metric("Tiempo de resguardo (días)", fmt_num(resultado["tiempo_resguardo_d"]))
-            c3.metric("Fecha probable de dispensa", resultado["fecha_dispensa"])
+            st.markdown("### Resultado del cálculo")
+            st.write(f"**Actividad estimada:** {fmt_num(resultado['actividad_bq_g'], 6)} Bq/g")
+            st.write(f"**Tiempo de resguardo:** {fmt_num(resultado['tiempo_resguardo_d'], 6)} días")
+            st.write(f"**Fecha probable de dispensa:** {resultado['fecha_dispensa']}")
+            st.write(f"**Bulto libre para liberación:** {resultado['bulto_libre_liberacion']}")
 
             if resultado["estado"] == "Liberable":
-                st.success("El bulto ya se encuentra bajo el nivel de dispensa.")
+                st.success("El bulto ya cumple el nivel de dispensa.")
             else:
                 st.warning("El bulto debe permanecer en resguardo hasta la fecha de dispensa.")
 
@@ -322,13 +307,14 @@ elif menu == "Detectores":
 
     with st.form("form_detector"):
         serie = st.text_input("N° Serie", value=serie_default)
+
         col1, col2 = st.columns(2)
         with col1:
-            eff_gamma = st.number_input("Eficiencia gamma", min_value=0.0, value=eff_gamma_default)
-            eff_beta = st.number_input("Eficiencia beta", min_value=0.0, value=eff_beta_default)
+            eff_gamma = st.number_input("Eficiencia gamma", min_value=0.0, value=eff_gamma_default, format="%.10f")
+            eff_beta = st.number_input("Eficiencia beta", min_value=0.0, value=eff_beta_default, format="%.10f")
         with col2:
-            eff_alpha = st.number_input("Eficiencia alpha", min_value=0.0, value=eff_alpha_default)
-            area_cm2 = st.number_input("Área de la ventana del detector (cm²)", min_value=0.0, value=area_default)
+            eff_alpha = st.number_input("Eficiencia alpha", min_value=0.0, value=eff_alpha_default, format="%.10f")
+            area_cm2 = st.number_input("Área de la ventana del detector (cm²)", min_value=0.0, value=area_default, format="%.10f")
 
         submitted = st.form_submit_button("Guardar / actualizar detector")
 
@@ -353,13 +339,16 @@ elif menu == "Detectores":
     if detectores_df.empty:
         st.info("No hay detectores registrados.")
     else:
-        st.dataframe(detectores_df, use_container_width=True)
+        df_show = detectores_df.copy()
+        for col in ["eff_gamma", "eff_beta", "eff_alpha", "area_cm2"]:
+            df_show[col] = df_show[col].apply(lambda x: fmt_num(x, 10))
+        st.dataframe(df_show, use_container_width=True)
 
 # --------------------------------------------------
 # HISTORIAL
 # --------------------------------------------------
 elif menu == "Historial":
-    st.subheader("Registros")
+    st.subheader("Historial de bultos")
 
     df = query_df("""
         SELECT
@@ -373,35 +362,18 @@ elif menu == "Historial":
             tiempo_resguardo_d AS tiempo_resguardo,
             fecha_medicion,
             fecha_dispensa,
-            estado
+            bulto_libre_liberacion
         FROM registros
         ORDER BY id DESC
     """)
 
+    st.write(f"**Cantidad de bultos registrados:** {len(df)}")
+
     if df.empty:
         st.info("No hay registros guardados todavía.")
     else:
-        # Formato visual sin alterar base
         df_show = df.copy()
         for col in ["masa", "cps", "actividad", "tiempo_resguardo"]:
-            df_show[col] = df_show[col].apply(lambda x: fmt_num(float(x)))
+            df_show[col] = df_show[col].apply(lambda x: fmt_num(x, 6))
 
         st.dataframe(df_show, use_container_width=True)
-
-        hoy = datetime.today().date()
-        df["fecha_dispensa_dt"] = pd.to_datetime(df["fecha_dispensa"], errors="coerce").dt.date
-        liberables = df[(df["estado"] == "Liberable") | (df["fecha_dispensa_dt"] <= hoy)].copy()
-
-        st.markdown("### Bultos liberables")
-        if liberables.empty:
-            st.info("No hay bultos liberables en este momento.")
-        else:
-            liberables_show = liberables[[
-                "id", "bulto", "radionuclido", "detector", "masa", "cps",
-                "actividad", "tiempo_resguardo", "fecha_medicion", "fecha_dispensa", "estado"
-            ]].copy()
-
-            for col in ["masa", "cps", "actividad", "tiempo_resguardo"]:
-                liberables_show[col] = liberables_show[col].apply(lambda x: fmt_num(float(x)))
-
-            st.dataframe(liberables_show, use_container_width=True)
